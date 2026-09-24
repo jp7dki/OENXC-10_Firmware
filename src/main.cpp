@@ -14,6 +14,7 @@
 QueueHandle_t displayDataQueue;
 SemaphoreHandle_t i2cSpiMutex;
 TaskHandle_t sensorTaskHandle = NULL;
+TaskHandle_t powerFailTaskHandle = NULL;
 
 // Globals for Web UI Monitoring
 volatile float currentTemp = 0.0f;
@@ -57,6 +58,18 @@ enum PowerState {
 void commTask(void *pvParameters);
 void displayTask(void *pvParameters);
 void sensorTask(void *pvParameters);
+void powerFailTask(void *pvParameters);
+
+void IRAM_ATTR lowVoltageISR() {
+    digitalWrite(PIN_HV_EN, LOW); // Immediate disable
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    if (powerFailTaskHandle != NULL) {
+        vTaskNotifyGiveFromISR(powerFailTaskHandle, &xHigherPriorityTaskWoken);
+    }
+    if (xHigherPriorityTaskWoken) {
+        portYIELD_FROM_ISR();
+    }
+}
 
 void IRAM_ATTR rtcInterruptISR() {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -154,10 +167,20 @@ void setup() {
     // Ensure all cathodes are H (Nixie OFF) immediately at boot
     shiftOutHV509(0xFFFF);
 
-    // Attach RTC Interrupt
+    // Attach Interrupts
     attachInterrupt(digitalPinToInterrupt(PIN_RTC_INT), rtcInterruptISR, FALLING);
+    attachInterrupt(digitalPinToInterrupt(PIN_LOW_VOLT_DET), lowVoltageISR, FALLING);
 
     // 4. Create Tasks on specified Cores
+    xTaskCreatePinnedToCore(
+        powerFailTask,
+        "PowerFailTask",
+        2048,
+        NULL,
+        configMAX_PRIORITIES - 1, // Highest priority
+        &powerFailTaskHandle,
+        1                       // Core ID (Core 1)
+    );
     xTaskCreatePinnedToCore(
         commTask,               // Task function
         "CommTask",             // Task name
@@ -687,3 +710,21 @@ void sensorTask(void *pvParameters) {
             bmeStatus, currentTemp, currentHum, currentPres, currentAmbientLight);
     }
 }
+void powerFailTask(void *pvParameters) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        
+        // Power is failing. Try to take the I2C mutex.
+        // If another task has it, priority inheritance will boost them to finish quickly.
+        if (xSemaphoreTake(i2cSpiMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            settingsManager.saveCumulativeTime();
+            xSemaphoreGive(i2cSpiMutex);
+        }
+        
+        // Loop forever after saving, waiting for actual power loss or hard reset
+        while(true) {
+            vTaskDelay(portMAX_DELAY);
+        }
+    }
+}
+
