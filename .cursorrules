@@ -1,0 +1,4 @@
+# AI Rules
+- 実装を行う際は、必ず `docs/hardware_spec.md` と `docs/software_spec.md` を読み込んでからコードを生成してください。
+- ハードウェア仕様書に記載されていないGPIOピンは使用しないでください。
+- 生成コードはPlatformIOの `src/main.cpp` に即時組み込める形式にしてください。
