@@ -95,7 +95,7 @@ void web_server_init() {
         doc["psOnMin"] = cs.powerSaveOnMin;
         doc["psOffHr"] = cs.powerSaveOffHour;
         doc["psOffMin"] = cs.powerSaveOffMin;
-        doc["cumSec"] = cs.cumulativeSeconds;
+        doc["cumMin"] = cs.cumulativeMinutes;
 
         String response;
         serializeJson(doc, response);

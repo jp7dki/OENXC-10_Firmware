@@ -6,7 +6,8 @@
 #include <Wire.h>
 
 #define FRAM_I2C_ADDR 0x50
-#define FRAM_ADDR_CUMULATIVE_TIME 0x00
+#define FRAM_ADDR_CUMULATIVE_TIME_A 0x00
+#define FRAM_ADDR_CUMULATIVE_TIME_B 0x08
 
 // App Modes
 enum AppMode {
@@ -50,7 +51,7 @@ struct AppSettings {
     uint8_t powerSaveOffMin;
     
     // Status (not saved to NVS)
-    uint32_t cumulativeSeconds; 
+    uint32_t cumulativeMinutes; 
 };
 
 class SettingsManager {

@@ -75,27 +75,69 @@ void SettingsManager::save() {
     }
 }
 
-// NOTE: Must be called with i2cSpiMutex held
-void SettingsManager::loadCumulativeTime() {
+// Helper to read a slot
+static uint32_t readSlot(uint8_t addr, bool &valid) {
     Wire.beginTransmission(FRAM_I2C_ADDR);
-    Wire.write(FRAM_ADDR_CUMULATIVE_TIME);
+    Wire.write(addr);
     if (Wire.endTransmission() == 0) {
-        Wire.requestFrom(FRAM_I2C_ADDR, 4);
-        if (Wire.available() == 4) {
+        Wire.requestFrom(FRAM_I2C_ADDR, 5);
+        if (Wire.available() == 5) {
             uint32_t val = 0;
             val |= Wire.read();
             val |= ((uint32_t)Wire.read() << 8);
             val |= ((uint32_t)Wire.read() << 16);
             val |= ((uint32_t)Wire.read() << 24);
+            uint8_t csum = Wire.read();
             
-            // If completely uninitialized (0xFFFFFFFF), set to 0
-            if (val == 0xFFFFFFFF) val = 0;
-            
-            if (xSemaphoreTake(settingsMutex, portMAX_DELAY) == pdTRUE) {
-                currentSettings.cumulativeSeconds = val;
-                xSemaphoreGive(settingsMutex);
+            uint8_t expected = (val & 0xFF) + ((val>>8)&0xFF) + ((val>>16)&0xFF) + ((val>>24)&0xFF);
+            if (csum == expected && val != 0xFFFFFFFF) {
+                valid = true;
+                return val;
             }
         }
+    }
+    valid = false;
+    return 0;
+}
+
+// NOTE: Must be called with i2cSpiMutex held
+void SettingsManager::loadCumulativeTime() {
+    bool validA = false;
+    uint32_t valA = readSlot(FRAM_ADDR_CUMULATIVE_TIME_A, validA);
+    
+    bool validB = false;
+    uint32_t valB = readSlot(FRAM_ADDR_CUMULATIVE_TIME_B, validB);
+    
+    uint32_t finalVal = 0;
+    if (validA && validB) {
+        finalVal = (valA > valB) ? valA : valB;
+    } else if (validA) {
+        finalVal = valA;
+    } else if (validB) {
+        finalVal = valB;
+    } else {
+        // Fallback for uninitialized FRAM or old format (seconds, no checksum)
+        Wire.beginTransmission(FRAM_I2C_ADDR);
+        Wire.write(FRAM_ADDR_CUMULATIVE_TIME_A);
+        if (Wire.endTransmission() == 0) {
+            Wire.requestFrom(FRAM_I2C_ADDR, 4);
+            if (Wire.available() == 4) {
+                finalVal = 0;
+                finalVal |= Wire.read();
+                finalVal |= ((uint32_t)Wire.read() << 8);
+                finalVal |= ((uint32_t)Wire.read() << 16);
+                finalVal |= ((uint32_t)Wire.read() << 24);
+                if (finalVal == 0xFFFFFFFF) finalVal = 0;
+                
+                // Convert old seconds to minutes
+                finalVal = finalVal / 60;
+            }
+        }
+    }
+    
+    if (xSemaphoreTake(settingsMutex, portMAX_DELAY) == pdTRUE) {
+        currentSettings.cumulativeMinutes = finalVal;
+        xSemaphoreGive(settingsMutex);
     }
 }
 
@@ -103,16 +145,30 @@ void SettingsManager::loadCumulativeTime() {
 void SettingsManager::saveCumulativeTime() {
     uint32_t val = 0;
     if (xSemaphoreTake(settingsMutex, portMAX_DELAY) == pdTRUE) {
-        val = currentSettings.cumulativeSeconds;
+        val = currentSettings.cumulativeMinutes;
         xSemaphoreGive(settingsMutex);
     }
     
+    uint8_t csum = (val & 0xFF) + ((val>>8)&0xFF) + ((val>>16)&0xFF) + ((val>>24)&0xFF);
+    
+    // Write to Slot A
     Wire.beginTransmission(FRAM_I2C_ADDR);
-    Wire.write(FRAM_ADDR_CUMULATIVE_TIME);
+    Wire.write(FRAM_ADDR_CUMULATIVE_TIME_A);
     Wire.write(val & 0xFF);
     Wire.write((val >> 8) & 0xFF);
     Wire.write((val >> 16) & 0xFF);
     Wire.write((val >> 24) & 0xFF);
+    Wire.write(csum);
+    Wire.endTransmission();
+    
+    // Write to Slot B
+    Wire.beginTransmission(FRAM_I2C_ADDR);
+    Wire.write(FRAM_ADDR_CUMULATIVE_TIME_B);
+    Wire.write(val & 0xFF);
+    Wire.write((val >> 8) & 0xFF);
+    Wire.write((val >> 16) & 0xFF);
+    Wire.write((val >> 24) & 0xFF);
+    Wire.write(csum);
     Wire.endTransmission();
     
     secondsSinceLastSave = 0;
@@ -129,9 +185,9 @@ AppSettings SettingsManager::get() {
 
 void SettingsManager::update(const AppSettings& newSettings) {
     if (xSemaphoreTake(settingsMutex, portMAX_DELAY) == pdTRUE) {
-        uint32_t cumTime = currentSettings.cumulativeSeconds; // Preserve
+        uint32_t cumTime = currentSettings.cumulativeMinutes; // Preserve
         currentSettings = newSettings;
-        currentSettings.cumulativeSeconds = cumTime;
+        currentSettings.cumulativeMinutes = cumTime;
         xSemaphoreGive(settingsMutex);
     }
     save(); // Persist to NVS
@@ -140,11 +196,12 @@ void SettingsManager::update(const AppSettings& newSettings) {
 bool SettingsManager::incrementCumulativeTime() {
     bool shouldSave = false;
     if (xSemaphoreTake(settingsMutex, portMAX_DELAY) == pdTRUE) {
-        currentSettings.cumulativeSeconds++;
         secondsSinceLastSave++;
-        // 3600 seconds = 1 hour
-        if (secondsSinceLastSave >= 3600) {
+        // 60 seconds = 1 minute
+        if (secondsSinceLastSave >= 60) {
+            currentSettings.cumulativeMinutes++;
             shouldSave = true;
+            secondsSinceLastSave = 0;
         }
         xSemaphoreGive(settingsMutex);
     }

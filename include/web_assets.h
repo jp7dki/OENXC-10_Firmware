@@ -288,9 +288,10 @@ const char WEB_HTML[] PROGMEM = R"=====(
             psEnableCheck.dispatchEvent(new Event('change'));
             
             // Format cumulative time
-            const cumSec = data.cumSec || 0;
-            const hours = Math.floor(cumSec / 3600);
-            document.getElementById('cumTime').innerText = `${hours} Hours`;
+            const cumMin = data.cumMin || 0;
+            const hours = Math.floor(cumMin / 60);
+            const minutes = cumMin % 60;
+            document.getElementById('cumTime').innerText = `${hours} Hours ${minutes} Minutes`;
         });
         
         // Load System Status
